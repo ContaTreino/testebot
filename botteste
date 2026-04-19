@@ -71,8 +71,8 @@ def lu(n,a): print(f"  {Fore.MAGENTA}[{_ts()}] 👤 {Style.BRIGHT}{n}{Fore.MAGEN
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║                    CONFIGURAÇÕES FIXAS                          ║
 # ╚══════════════════════════════════════════════════════════════════╝
-TOKEN    = "8618840827:AAGz4lu1m3ZQZbzPEM1iUKg5ucx8FD3tBAQ"
-OWNER_ID = 2061557102   # Edivaldo Silva
+TOKEN    = "861827:AAUKg5ucx8FD3tBAQ"
+OWNER_ID = 2061   # Edivaldo Silva
 
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR  = os.path.join(BASE_DIR, "data")
