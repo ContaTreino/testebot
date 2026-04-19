@@ -1,0 +1,1454 @@
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║            AUTO-INSTALL DE DEPENDÊNCIAS                         ║
+# ╚══════════════════════════════════════════════════════════════════╝
+import subprocess, sys, os, platform
+
+REQUIRED = {
+    "requests":  "requests",
+    "telebot":   "pyTelegramBotAPI",
+    "unidecode": "unidecode",
+    "colorama":  "colorama",
+    "pyfiglet":  "pyfiglet",
+    "mutagen":   "mutagen",
+}
+
+def auto_install():
+    print("\n🔍 Verificando dependências...\n")
+    for imp, pkg in REQUIRED.items():
+        try:
+            __import__(imp)
+        except ImportError:
+            print(f"  📦 Instalando {pkg}...")
+            r = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--quiet", pkg],
+                capture_output=True, text=True
+            )
+            print(f"  {'✅' if r.returncode == 0 else '❌'} {pkg}")
+
+auto_install()
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                         IMPORTS                                 ║
+# ╚══════════════════════════════════════════════════════════════════╝
+import requests, telebot, json, time, logging, threading, re, os, shutil
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from datetime      import datetime
+from urllib.parse  import urlparse, parse_qs
+from unidecode     import unidecode
+from colorama      import init, Fore, Style
+from pathlib       import Path
+import pyfiglet
+
+init(autoreset=True)
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                    CONSOLE BONITO                               ║
+# ╚══════════════════════════════════════════════════════════════════╝
+def print_banner():
+    os.system('cls' if platform.system() == 'Windows' else 'clear')
+    txt  = pyfiglet.figlet_format("CineBot", font="slant")
+    cors = [Fore.CYAN, Fore.BLUE, Fore.MAGENTA, Fore.CYAN, Fore.BLUE, Fore.CYAN]
+    print()
+    for i, ln in enumerate(txt.split('\n')):
+        print(f"  {cors[i % len(cors)]}{Style.BRIGHT}{ln}")
+    W   = 66
+    sep = f"  {Fore.CYAN}{'═' * W}"
+    print(sep)
+    print(f"  {Fore.WHITE}{Style.BRIGHT}{'🎬  CINEBOT ULTRA PRO  ·  STREAMING & MUSIC':^{W}}")
+    print(sep)
+    print(f"  {Fore.YELLOW}  {'Sistema':<30} {Fore.GREEN}{platform.system()} {platform.release()}")
+    print(f"  {Fore.YELLOW}  {'Python':<30} {Fore.GREEN}{sys.version.split()[0]}")
+    print(f"  {Fore.YELLOW}  {'Status':<30} {Fore.GREEN}Iniciando...")
+    print(sep + "\n")
+
+def _ts():   return datetime.now().strftime('%H:%M:%S')
+def li(m):   print(f"  {Fore.CYAN}[{_ts()}] ℹ  {Style.BRIGHT}{m}")
+def lok(m):  print(f"  {Fore.GREEN}[{_ts()}] ✅ {Style.BRIGHT}{m}")
+def lw(m):   print(f"  {Fore.YELLOW}[{_ts()}] ⚠  {Style.BRIGHT}{m}")
+def le(m):   print(f"  {Fore.RED}[{_ts()}] ❌ {Style.BRIGHT}{m}")
+def lu(n,a): print(f"  {Fore.MAGENTA}[{_ts()}] 👤 {Style.BRIGHT}{n}{Fore.MAGENTA} › {Fore.WHITE}{a}")
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                    CONFIGURAÇÕES FIXAS                          ║
+# ╚══════════════════════════════════════════════════════════════════╝
+TOKEN    = "8618840827:AAGz4lu1m3ZQZbzPEM1iUKg5ucx8FD3tBAQ"
+OWNER_ID = 2061557102   # Edivaldo Silva
+
+BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR  = os.path.join(BASE_DIR, "data")
+LOGS_DIR  = os.path.join(BASE_DIR, "logs")
+MUSIC_DIR = os.path.join(BASE_DIR, "music")
+for _d in (DATA_DIR, LOGS_DIR, MUSIC_DIR):
+    os.makedirs(_d, exist_ok=True)
+
+F_USERS  = os.path.join(DATA_DIR, "usuarios.json")
+F_GROUPS = os.path.join(DATA_DIR, "grupos.json")
+F_URLS   = os.path.join(DATA_DIR, "urls.json")
+F_CONFIG = os.path.join(DATA_DIR, "config.json")
+F_AUTH   = os.path.join(DATA_DIR, "autorizados.json")
+
+logging.basicConfig(
+    filename=os.path.join(LOGS_DIR, 'erros.log'),
+    level=logging.ERROR,
+    format='%(asctime)s:%(levelname)s:%(message)s'
+)
+
+bot          = telebot.TeleBot(TOKEN, parse_mode=None)
+FALLBACK_IMG = "https://i.ibb.co/C043gbT/Bot.png"
+HDR          = {'User-Agent': 'Mozilla/5.0'}
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║          CONFIGURAÇÃO DINÂMICA                                  ║
+# ╚══════════════════════════════════════════════════════════════════╝
+_CFG_DEFAULT = {
+    "musica_ativa":     False,
+    "qualidade_padrao": "MP3_128",   # MP3_128 | MP3_320 | FLAC
+    "deezer_arl":       "",
+}
+
+QUAL_MAP   = {"MP3_128": "1", "MP3_320": "3", "FLAC": "9"}
+QUAL_LABEL = {"MP3_128": "MP3 128 kbps", "MP3_320": "MP3 320 kbps", "FLAC": "FLAC Lossless"}
+
+def _cfg() -> dict:
+    try:
+        with open(F_CONFIG) as f:
+            d = json.load(f)
+        for k, v in _CFG_DEFAULT.items():
+            d.setdefault(k, v)
+        return d
+    except:
+        return dict(_CFG_DEFAULT)
+
+def _cfg_set(key, value):
+    d = _cfg(); d[key] = value
+    with open(F_CONFIG, "w") as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                  PERSISTÊNCIA — FUNÇÕES BASE                    ║
+# ╚══════════════════════════════════════════════════════════════════╝
+def _load(path, default):
+    try:
+        with open(path) as f: return json.load(f)
+    except: return default
+
+def _save(path, obj):
+    with open(path, "w") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
+
+# ── Usuários ──────────────────────────────────────────────────────
+def salvar_usuario(uid, username, full_name):
+    users = _load(F_USERS, [])
+    if any(u["id"] == uid for u in users): return
+    users.append({"id": uid, "username": username,
+                  "full_name": full_name, "joined": datetime.now().isoformat()})
+    _save(F_USERS, users)
+
+# ── Autorizados para música ───────────────────────────────────────
+def _auth() -> dict:
+    return _load(F_AUTH, {})
+
+def auth_add(uid: int, qualidade: str = None) -> bool:
+    d = _auth()
+    d[str(uid)] = {"uid": uid,
+                   "qualidade": qualidade or _cfg().get("qualidade_padrao", "MP3_128"),
+                   "added": datetime.now().isoformat()}
+    _save(F_AUTH, d); return True
+
+def auth_remove(uid: int) -> bool:
+    d = _auth()
+    if str(uid) not in d: return False
+    del d[str(uid)]; _save(F_AUTH, d); return True
+
+def auth_set_qual(uid: int, qualidade: str) -> bool:
+    d = _auth()
+    if str(uid) not in d: return False
+    d[str(uid)]["qualidade"] = qualidade; _save(F_AUTH, d); return True
+
+def is_auth_musica(uid: int) -> bool:
+    return uid == OWNER_ID or str(uid) in _auth()
+
+def get_qual(uid: int) -> str:
+    if uid == OWNER_ID: return _cfg().get("qualidade_padrao", "MP3_128")
+    return _auth().get(str(uid), {}).get("qualidade", "MP3_128")
+
+# ── URLs de streaming / Credenciais ──────────────────────────────
+def _urls():
+    return _load(F_URLS, {"active": None, "list": []})
+
+def extrair_creds(url):
+    try:
+        url = url.strip(); p = urlparse(url)
+        host = p.hostname or ''; port = str(p.port) if p.port else '80'
+        base = f"{p.scheme}://{host}:{port}"; qs = parse_qs(p.query)
+        if 'username' in qs and 'password' in qs:
+            return {"base": base, "host": host, "port": port,
+                    "username": qs['username'][0], "password": qs['password'][0]}
+        pts = [x for x in p.path.split('/') if x]
+        if len(pts) >= 2 and not pts[0].endswith('.php'):
+            return {"base": base, "host": host, "port": port,
+                    "username": pts[0], "password": pts[1]}
+    except Exception as e: logging.error(f"extrair_creds: {e}")
+    return None
+
+def url_add(url, label):
+    creds = extrair_creds(url)
+    if not creds:
+        return False, ("❌ Não consegui extrair credenciais.\n\n"
+                       "Formatos aceitos:\n"
+                       "<code>http://host:80/get.php?username=U&password=P</code>\n"
+                       "<code>http://host:80/player_api.php?username=U&password=P</code>\n"
+                       "<code>http://host:80/U/P/arquivo</code>")
+    data = _urls()
+    for e in data["list"]:
+        if e["creds"]["host"] == creds["host"] and e["creds"]["username"] == creds["username"]:
+            return False, f"⚠️ URL já cadastrada como <b>{e['label']}</b>."
+    data["list"].append({"label": label, "url": url, "creds": creds,
+                         "added": datetime.now().isoformat()})
+    if data["active"] is None: data["active"] = 0
+    _save(F_URLS, data); return True, creds
+
+def url_remove(idx):
+    data = _urls(); lst = data["list"]
+    if not (0 <= idx < len(lst)): return False, "Índice inválido."
+    label = lst.pop(idx)["label"]
+    if not lst: data["active"] = None
+    elif data["active"] is not None:
+        if data["active"] == idx: data["active"] = 0
+        elif data["active"] > idx: data["active"] -= 1
+    _save(F_URLS, data); return True, label
+
+def url_set_active(idx):
+    data = _urls()
+    if not (0 <= idx < len(data["list"])): return False, ""
+    data["active"] = idx; _save(F_URLS, data)
+    return True, data["list"][idx]["label"]
+
+def get_active_creds():
+    data = _urls()
+    if data["active"] is None or not data["list"]: return None
+    idx = data["active"]
+    return data["list"][idx]["creds"] if 0 <= idx < len(data["list"]) else None
+
+# ── Grupos / Tópicos ──────────────────────────────────────────────
+def _groups(): return _load(F_GROUPS, {})
+
+def group_set(chat_id, thread_id, title=""):
+    g = _groups(); g[str(chat_id)] = {"thread_id": str(thread_id), "title": title}
+    _save(F_GROUPS, g)
+
+def group_remove(chat_id):
+    g = _groups(); g.pop(str(chat_id), None); _save(F_GROUPS, g)
+
+def get_thread(chat_id):
+    entry = _groups().get(str(chat_id))
+    return entry["thread_id"] if entry else None
+
+def is_allowed(message):
+    if message.chat.type == 'private': return True
+    if message.chat.type in ('group', 'supergroup'):
+        t = get_thread(message.chat.id)
+        if t is None: return False
+        return str(getattr(message, 'message_thread_id', None)) == str(t)
+    return False
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║       GUARDA-TERRITORIAL — expulsa outros bots do tópico        ║
+# ╚══════════════════════════════════════════════════════════════════╝
+def _try_delete(chat_id, msg_id):
+    try: bot.delete_message(chat_id, msg_id)
+    except: pass
+
+@bot.message_handler(func=lambda m: (
+    m.from_user and m.from_user.is_bot
+    and m.chat.type in ('group', 'supergroup')
+    and str(getattr(m, 'message_thread_id', None)) == str(get_thread(m.chat.id))
+))
+def h_expulsa_bot(message):
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+        aviso = bot.send_message(message.chat.id,
+            "🤖 Aqui não, mané! Esse tópico é todo meu! 😤",
+            message_thread_id=message.message_thread_id)
+        threading.Timer(5.0, _try_delete, args=(message.chat.id, aviso.message_id)).start()
+        lw(f"Bot @{message.from_user.username or message.from_user.id} expulso do tópico")
+    except Exception as e: logging.error(f"h_expulsa_bot: {e}")
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                  SESSÕES (anti-conflito)                        ║
+# ╚══════════════════════════════════════════════════════════════════╝
+_sessions = {}; _sess_map = {}; _sid_lock = threading.Lock()
+_sid_ctr  = 0;  _cooldown = {}; _pending  = {}
+
+def _new_sid(chat_id, user_id):
+    global _sid_ctr
+    with _sid_lock:
+        _sid_ctr += 1; sid = _sid_ctr
+    _sess_map[(chat_id, user_id)] = sid; return sid
+
+def _owner(sid):
+    s = _sessions.get(sid); return s['user_id'] if s else None
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║               DETECÇÃO E VALIDAÇÃO DE URL MUSICAL               ║
+# ╔══════════════════════════════════════════════════════════════════╝
+# Padrões aceitos
+_RE_DZ_ALBUM   = re.compile(r'deezer\.com(?:/[a-z]{2})?/album/(\d+)',      re.I)
+_RE_DZ_TRACK   = re.compile(r'deezer\.com(?:/[a-z]{2})?/track/(\d+)',      re.I)
+_RE_SP_ALBUM   = re.compile(r'open\.spotify\.com/album/([A-Za-z0-9]+)',    re.I)
+_RE_SP_TRACK   = re.compile(r'open\.spotify\.com/track/([A-Za-z0-9]+)',    re.I)
+# Playlists — bloqueadas
+_RE_DZ_PL      = re.compile(r'deezer\.com(?:/[a-z]{2})?/playlist/',        re.I)
+_RE_SP_PL      = re.compile(r'open\.spotify\.com/playlist/',               re.I)
+
+def classificar_url_musical(text: str):
+    """
+    Retorna (tipo, id_ou_url) onde tipo é:
+      'dz_album'  | 'dz_track'
+      'sp_album'  | 'sp_track'
+      'playlist'  → bloqueado
+      None        → não é URL musical
+    """
+    text = text.strip()
+    if _RE_DZ_PL.search(text) or _RE_SP_PL.search(text):
+        return 'playlist', None
+    m = _RE_DZ_ALBUM.search(text)
+    if m: return 'dz_album', m.group(1)
+    m = _RE_DZ_TRACK.search(text)
+    if m: return 'dz_track', m.group(1)
+    m = _RE_SP_ALBUM.search(text)
+    if m: return 'sp_album', m.group(1)
+    m = _RE_SP_TRACK.search(text)
+    if m: return 'sp_track', m.group(1)
+    return None, None
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║              METADADOS DEEZER — Álbum / Faixa                   ║
+# ╚══════════════════════════════════════════════════════════════════╝
+def _dz_api(endpoint: str) -> dict | None:
+    try:
+        r = requests.get(f"https://api.deezer.com/{endpoint}", headers=HDR, timeout=12)
+        r.raise_for_status(); data = r.json()
+        if data.get("error"): return None
+        return data
+    except Exception as e:
+        logging.error(f"_dz_api {endpoint}: {e}"); return None
+
+def metadados_album_deezer(album_id: str) -> dict | None:
+    return _dz_api(f"album/{album_id}")
+
+def metadados_track_deezer(track_id: str) -> dict | None:
+    return _dz_api(f"track/{track_id}")
+
+def montar_card_album(album: dict, qual_label: str) -> tuple:
+    """
+    Retorna (foto_url, caption, kb_inline).
+    """
+    title      = album.get("title", "N/A")
+    artist     = (album.get("artist") or {}).get("name", "N/A")
+    year       = str(album.get("release_date", "N/A"))[:4]
+    nb_tracks  = album.get("nb_tracks", "N/A")
+    genres_raw = album.get("genres") or {}
+    genres     = ", ".join(g["name"] for g in genres_raw.get("data", [])) or "N/A"
+    cover      = album.get("cover_xl") or album.get("cover_big") or FALLBACK_IMG
+    alb_url    = album.get("link", f"https://www.deezer.com/album/{album.get('id','')}")
+
+    caption = (
+        f"💿 <b>{title}</b>\n"
+        f"{'─' * 30}\n"
+        f"👤 <b>Artista :</b> {artist}\n"
+        f"💿 <b>Álbum   :</b> {title}\n"
+        f"📅 <b>Ano     :</b> {year}\n"
+        f"🎵 <b>Faixas  :</b> {nb_tracks}\n"
+        f"🎼 <b>Gênero  :</b> {genres}\n"
+        f"🎧 <b>Formato :</b> {qual_label}\n"
+        f"{'─' * 30}"
+    )
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        InlineKeyboardButton("⬇️ Baixar Álbum",   callback_data=f"mus|dl_alb|{album.get('id')}"),
+        InlineKeyboardButton("🔗 Ver no Deezer",   url=alb_url),
+    )
+    kb.add(InlineKeyboardButton("❌ Cancelar",      callback_data="usr|cancel"))
+    return cover, caption, kb
+
+def montar_card_track(track: dict, qual_label: str) -> tuple:
+    """
+    Retorna (foto_url, caption, kb_inline).
+    """
+    title   = track.get("title", "N/A")
+    artist  = (track.get("artist") or {}).get("name", "N/A")
+    album   = (track.get("album")  or {}).get("title", "N/A")
+    cover   = ((track.get("album") or {}).get("cover_xl")
+               or (track.get("album") or {}).get("cover_big")
+               or FALLBACK_IMG)
+    dur_s   = track.get("duration", 0)
+    dur_str = f"{dur_s // 60}:{dur_s % 60:02d}" if dur_s else "N/A"
+    trk_url = track.get("link", f"https://www.deezer.com/track/{track.get('id','')}")
+
+    caption = (
+        f"🎵 <b>{title}</b>\n"
+        f"{'─' * 30}\n"
+        f"👤 <b>Artista :</b> {artist}\n"
+        f"💿 <b>Álbum   :</b> {album}\n"
+        f"⏱ <b>Duração :</b> {dur_str}\n"
+        f"🎧 <b>Formato :</b> {qual_label}\n"
+        f"{'─' * 30}"
+    )
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        InlineKeyboardButton("⬇️ Baixar Faixa",  callback_data=f"mus|dl_trk|{track.get('id')}"),
+        InlineKeyboardButton("🔗 Ver no Deezer",  url=trk_url),
+    )
+    kb.add(InlineKeyboardButton("❌ Cancelar",     callback_data="usr|cancel"))
+    return cover, caption, kb
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║              DOWNLOAD — deemix (álbum / faixa)                  ║
+# ╚══════════════════════════════════════════════════════════════════╝
+def _deemix_download(dz_url: str, uid: int, is_album: bool) -> list | None:
+    """
+    Faz download via deemix e retorna lista de caminhos de arquivos.
+    Para álbuns usa ffmpeg (merge + tag) através das opções do deemix.
+    Aceita URL do Deezer ou do Spotify — o deemix resolve automaticamente.
+    """
+    try:
+        from deemix              import generateDownloadObject
+        from deemix.settings     import load as loadSettings
+        from deemix.downloader   import Downloader
+        from deezer              import Deezer
+    except ImportError:
+        le("deemix/deezer-python não instalado. Execute: pip install deemix deezer-python")
+        return None
+
+    try:
+        qualidade = get_qual(uid)
+        bitrate   = QUAL_MAP.get(qualidade, "1")
+        dest      = os.path.join(MUSIC_DIR, str(uid))
+        os.makedirs(dest, exist_ok=True)
+
+        dz  = Deezer()
+        arl = _cfg().get("deezer_arl", "").strip()
+        if not arl or not dz.login_via_arl(arl):
+            le("ARL Deezer inválida ou expirada.")
+            return None
+
+        settings = loadSettings()
+        settings["downloadLocation"]    = dest
+        settings["maxBitrate"]          = bitrate
+        settings["createArtistFolder"]  = False
+        settings["createAlbumFolder"]   = is_album    # pasta por álbum somente para álbuns
+        settings["saveArtworkArtist"]   = False
+        settings["saveArtwork"]         = is_album
+        # ffmpeg só é acionado pelo deemix em conversões e merge de álbum
+        settings["featuredToTitle"]     = False
+        settings["overwriteFile"]       = "y"
+
+        snapshot_before = set(Path(dest).rglob("*"))
+
+        obj = generateDownloadObject(dz, dz_url, bitrate)
+        if isinstance(obj, list):
+            for o in obj: Downloader(dz, o, settings).start()
+        else:
+            Downloader(dz, obj, settings).start()
+
+        snapshot_after = set(Path(dest).rglob("*"))
+        new_files = sorted(
+            str(f) for f in (snapshot_after - snapshot_before)
+            if Path(f).is_file() and Path(f).suffix.lower() in ('.mp3', '.flac', '.ogg', '.opus')
+        )
+        return new_files or None
+    except Exception as e:
+        logging.error(f"_deemix_download: {e}"); return None
+
+
+def _executar_download_e_enviar(chat_id, tid, uid, dz_url, is_album,
+                                prog_msg_id, nome_exibicao: str):
+    """
+    Thread de download: baixa, envia os arquivos e limpa a pasta temporária.
+    """
+    qual_label = QUAL_LABEL.get(get_qual(uid), "?")
+    tipo_str   = "álbum" if is_album else "faixa"
+
+    def _edit(txt):
+        try: bot.edit_message_text(txt, chat_id=chat_id,
+                                   message_id=prog_msg_id, parse_mode='HTML')
+        except: pass
+
+    _edit(f"⏳ Baixando {tipo_str} <b>{nome_exibicao}</b> em {qual_label}…\n"
+          f"<i>Aguarde, isso pode levar alguns instantes.</i>")
+
+    files = _deemix_download(dz_url, uid, is_album)
+
+    if not files:
+        _edit("❌ <b>Falha no download.</b>\n\n"
+              "Verifique:\n"
+              "• A ARL Deezer está válida? (Painel Admin → Música)\n"
+              "• A URL é de álbum ou faixa (playlists não são aceitas)\n"
+              "• deemix e deezer-python estão instalados")
+        return
+
+    _edit(f"📤 Enviando <b>{len(files)}</b> arquivo(s)…")
+
+    for fpath in files:
+        try:
+            with open(fpath, 'rb') as f:
+                kw = {"message_thread_id": tid} if tid else {}
+                bot.send_audio(chat_id, f, **kw)
+            os.remove(fpath)
+        except Exception as e:
+            logging.error(f"send_audio: {e}")
+
+    # Limpa pasta do usuário após envio
+    user_dir = os.path.join(MUSIC_DIR, str(uid))
+    try:
+        shutil.rmtree(user_dir, ignore_errors=True)
+    except: pass
+
+    _try_delete(chat_id, prog_msg_id)
+    lok(f"Download concluído: {nome_exibicao} ({len(files)} arquivo(s))")
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                       API DE FILMES                             ║
+# ╚══════════════════════════════════════════════════════════════════╝
+def api_get(creds, params, timeout=18):
+    url = f"{creds['base']}/player_api.php"
+    p   = {"username": creds["username"], "password": creds["password"]}
+    p.update(params)
+    r = requests.get(url, params=p, headers=HDR, timeout=timeout)
+    r.raise_for_status(); return r.json()
+
+def buscar_info_filme(creds, vod_id):
+    try: return api_get(creds, {"action": "get_vod_info", "vod_id": vod_id})
+    except Exception as e: logging.error(f"buscar_info_filme: {e}"); return None
+
+def buscar_por_nome(creds, termo):
+    try:
+        data = api_get(creds, {"action": "get_vod_streams"}, timeout=30)
+        if re.match(r'^\d+$', termo.strip()):
+            match = [i for i in data if str(i.get("stream_id","")) == termo.strip()]
+            return match or None
+        termo_limpo = termo.lstrip("@").strip()
+        t = unidecode(termo_limpo.lower())
+        return [i for i in data if t in unidecode(str(i.get("name",""))).lower()] or None
+    except Exception as e: logging.error(f"buscar_por_nome: {e}"); return None
+
+def stream_url(creds, stream_id, ext):
+    return f"{creds['base']}/movie/{creds['username']}/{creds['password']}/{stream_id}.{ext}"
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                  HELPERS DE ENVIO                               ║
+# ╚══════════════════════════════════════════════════════════════════╝
+def _thread(message):
+    if message.chat.type in ('group', 'supergroup'):
+        return getattr(message, 'message_thread_id', None)
+    return None
+
+def send_msg(chat_id, text, thread_id=None, **kw):
+    if thread_id: kw['message_thread_id'] = thread_id
+    return bot.send_message(chat_id, text, **kw)
+
+def send_photo(chat_id, photo, caption, kb, thread_id=None):
+    kw = {'caption': caption, 'parse_mode': 'HTML', 'reply_markup': kb}
+    if thread_id: kw['message_thread_id'] = thread_id
+    try: return bot.send_photo(chat_id, photo, **kw)
+    except:
+        try: return bot.send_photo(chat_id, FALLBACK_IMG, **kw)
+        except Exception as e: logging.error(f"send_photo fallback: {e}"); return None
+
+def edit_or_send(call, kb, txt):
+    try:
+        bot.edit_message_text(txt, chat_id=call.message.chat.id,
+                              message_id=call.message.message_id,
+                              parse_mode='HTML', reply_markup=kb)
+    except: send_msg(call.message.chat.id, txt, parse_mode='HTML', reply_markup=kb)
+
+def mention(user) -> str:
+    name = ((user.first_name or "") + (" " + user.last_name if user.last_name else "")).strip()
+    name = name or f"id{user.id}"
+    return f"@{user.username}" if user.username else f'<a href="tg://user?id={user.id}">{name}</a>'
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                  MONTAGEM DO CARD DE FILME                      ║
+# ╚══════════════════════════════════════════════════════════════════╝
+def _v(val, default="N/A"):
+    if val is None: return default
+    s = str(val).strip()
+    return default if s in ("","0","None","null","N/A") else s
+
+def _valid_url(u):
+    if not u or not isinstance(u, str): return False
+    return u.strip().startswith("http") and len(u.strip()) > 12
+
+def montar_card_filme(result, info, index, total, sid, creds, searcher_mention=""):
+    info      = info or {}
+    stream_id = result.get("stream_id", "")
+    ext       = _v(result.get("container_extension"), "mkv")
+    title     = _v(result.get("name"), "Título desconhecido")
+    image     = (_v(info.get("movie_image")) or _v(info.get("cover_big"))
+                 or _v(result.get("stream_icon")) or FALLBACK_IMG)
+    if not _valid_url(image): image = FALLBACK_IMG
+
+    desc     = _v(info.get("description") or info.get("plot"))
+    genre    = _v(info.get("genre")); director = _v(info.get("director"))
+    actors   = _v(info.get("actors") or info.get("cast"))
+    duration = _v(info.get("duration")); country = _v(info.get("country"))
+    release  = _v(info.get("releasedate")); trailer = info.get("youtube_trailer","")
+    rating   = _v(info.get("rating") or result.get("rating"))
+    year     = release[:4] if release and release != "N/A" else _v(result.get("year"))
+
+    try:
+        r5 = float(_v(result.get("rating_5based"), "0"))
+        stars = "⭐" * min(5, max(0, round(r5))) if r5 > 0 else ""
+    except: stars = ""
+
+    lines = [f"🎬 <b>{title}</b>"]
+    if searcher_mention: lines.append(f"🔍 <i>Buscado por {searcher_mention}</i>")
+    lines.append("─" * 28)
+    if year     != "N/A": lines.append(f"📅 <b>Ano:</b> {year}")
+    if rating   != "N/A": lines.append(f"⭐ <b>Nota:</b> {rating}  {stars}".rstrip())
+    if duration != "N/A": lines.append(f"⏱ <b>Duração:</b> {duration}")
+    if genre    != "N/A": lines.append(f"🎭 <b>Gênero:</b> {genre}")
+    if country  != "N/A": lines.append(f"🌎 <b>País:</b> {country}")
+    if director != "N/A": lines.append(f"🎥 <b>Diretor:</b> {director}")
+    if actors   != "N/A":
+        a = actors[:90] + "…" if len(actors) > 90 else actors
+        lines.append(f"🎭 <b>Elenco:</b> {a}")
+    if desc != "N/A":
+        d = desc[:190] + "…" if len(desc) > 190 else desc
+        lines += ["─" * 28, f"📖 {d}"]
+    lines += ["─" * 28, f"📄 <b>{index+1} de {total}</b>"]
+    caption = "\n".join(lines)
+
+    kb  = InlineKeyboardMarkup(row_width=2)
+    nav = []
+    if index > 0:       nav.append(InlineKeyboardButton("⬅️ Voltar",    callback_data=f"n|{sid}|{index-1}"))
+    if index < total-1: nav.append(InlineKeyboardButton("Avançar ➡️", callback_data=f"n|{sid}|{index+1}"))
+    if nav: kb.row(*nav)
+
+    watch = stream_url(creds, stream_id, ext)
+    row2  = [InlineKeyboardButton("▶️ Assistir", url=watch)]
+    if trailer and str(trailer).strip():
+        row2.append(InlineKeyboardButton("🎞 Trailer YT", url=f"https://youtu.be/{trailer}"))
+    kb.row(*row2)
+    kb.row(InlineKeyboardButton("🔍 Nova Busca", callback_data=f"nb|{sid}"))
+    return image, caption, kb
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                   ANIMAÇÃO DE CARREGAMENTO                      ║
+# ╚══════════════════════════════════════════════════════════════════╝
+def loading_animation(chat_id, del_msg_id, thread_id=None):
+    try:
+        kw = {"message_thread_id": thread_id} if thread_id else {}
+        lm = bot.send_message(chat_id, "🎬 Buscando... [░░░░░░░░░░] 0%", **kw)
+        for i in range(1, 11):
+            time.sleep(0.3)
+            bar = "█" * i + "░" * (10 - i)
+            bot.edit_message_text(f"🎬 Buscando... [{bar}] {i*10}%",
+                                  chat_id=chat_id, message_id=lm.message_id)
+        time.sleep(0.4)
+        bot.delete_message(chat_id, lm.message_id)
+        try: bot.delete_message(chat_id, del_msg_id)
+        except: pass
+    except Exception as e: logging.error(f"loading_animation: {e}")
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                  TECLADOS — ADMIN                               ║
+# ╚══════════════════════════════════════════════════════════════════╝
+def kb_admin_main():
+    cfg   = _cfg()
+    m_ico = "🟢" if cfg["musica_ativa"] else "🔴"
+    kb    = InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        InlineKeyboardButton("🌐 Gerenciar URLs",             callback_data="adm|urls"),
+        InlineKeyboardButton("👥 Gerenciar Grupos",            callback_data="adm|grupos"),
+        InlineKeyboardButton("🎵 Gerenciar Música",            callback_data="adm|musica"),
+        InlineKeyboardButton(f"{m_ico} Módulo Música ON/OFF", callback_data="adm|tog_musica"),
+        InlineKeyboardButton("📊 Estatísticas",                callback_data="adm|stats"),
+        InlineKeyboardButton("❌ Fechar",                      callback_data="adm|close"),
+    )
+    txt = (
+        "🎛 <b>Painel Administrativo — CineBot Ultra Pro</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎵 Módulo Música : <b>{'ATIVO ✅' if cfg['musica_ativa'] else 'INATIVO 🔴'}</b>\n"
+        f"🎚 Qualidade pad : <b>{QUAL_LABEL.get(cfg['qualidade_padrao'], '?')}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    return kb, txt
+
+def kb_musica_menu():
+    cfg  = _cfg(); auth = _auth()
+    arl  = cfg.get("deezer_arl", "")
+    arl_status = f"<code>{arl[:10]}…</code> ✅" if arl else "❌ <i>Não configurada</i>"
+    lines = [
+        "🎵 <b>Módulo Música</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"🔑 ARL Deezer : {arl_status}",
+        f"🎚 Qualidade  : <b>{QUAL_LABEL.get(cfg['qualidade_padrao'], '?')}</b>",
+        "",
+        "📋 <b>Usuários autorizados:</b>",
+    ]
+    kb = InlineKeyboardMarkup(row_width=1)
+    if not auth:
+        lines.append("  <i>Nenhum autorizado ainda.</i>")
+    else:
+        for uid_s, info in auth.items():
+            q = QUAL_LABEL.get(info.get("qualidade","MP3_128"), "?")
+            lines.append(f"  • <code>{uid_s}</code> — {q}")
+            kb.row(
+                InlineKeyboardButton(f"🗑 Remover {uid_s}", callback_data=f"mus|del|{uid_s}"),
+                InlineKeyboardButton("🎚 Qualidade",        callback_data=f"mus|setq|{uid_s}"),
+            )
+    kb.row(
+        InlineKeyboardButton("🎚 128kbps", callback_data="mus|qual_pad|MP3_128"),
+        InlineKeyboardButton("🎚 320kbps", callback_data="mus|qual_pad|MP3_320"),
+        InlineKeyboardButton("🎚 FLAC",    callback_data="mus|qual_pad|FLAC"),
+    )
+    kb.row(
+        InlineKeyboardButton("🔑 Configurar ARL",    callback_data="mus|set_arl"),
+        InlineKeyboardButton("➕ Autorizar usuário", callback_data="mus|add"),
+    )
+    kb.add(InlineKeyboardButton("↩ Voltar", callback_data="adm|main"))
+    return kb, "\n".join(lines)
+
+def kb_urls_menu():
+    data = _urls(); lst = data["list"]; act = data["active"]
+    kb   = InlineKeyboardMarkup(row_width=1)
+    lines = ["🌐 <b>URLs Cadastradas</b>\n━━━━━━━━━━━━━━━━━━━━━━━"]
+    if not lst:
+        lines.append("\n<i>Nenhuma URL cadastrada ainda.</i>")
+    else:
+        for i, e in enumerate(lst):
+            tag = " ✅ <b>ATIVA</b>" if i == act else ""
+            lines.append(f"\n<b>{i+1}. {e['label']}</b>{tag}")
+            lines.append(f"   🖥 <code>{e['creds']['host']}:{e['creds']['port']}</code>")
+            lines.append(f"   👤 <code>{e['creds']['username']}</code>")
+            row = []
+            if i != act: row.append(InlineKeyboardButton(f"✅ Usar #{i+1}", callback_data=f"url|use|{i}"))
+            row.append(InlineKeyboardButton(f"🗑 Remover #{i+1}", callback_data=f"url|del|{i}"))
+            kb.row(*row)
+    kb.row(InlineKeyboardButton("➕ Adicionar URL", callback_data="url|add"),
+           InlineKeyboardButton("↩ Voltar",         callback_data="adm|main"))
+    return kb, "\n".join(lines)
+
+def kb_grupos_menu():
+    g  = _groups(); kb = InlineKeyboardMarkup(row_width=1)
+    lines = ["👥 <b>Grupos Configurados</b>\n━━━━━━━━━━━━━━━━━━━━━━━"]
+    if not g:
+        lines.append("\n<i>Nenhum grupo configurado ainda.</i>")
+    else:
+        for cid, info in g.items():
+            title = info.get("title","Sem nome"); tid = info.get("thread_id","?")
+            lines.append(f"\n📌 <b>{title}</b>")
+            lines.append(f"   Chat ID: <code>{cid}</code>  |  Tópico: <code>{tid}</code>")
+            kb.add(InlineKeyboardButton(f"🗑 Remover: {title}", callback_data=f"grp|del|{cid}"))
+    kb.row(InlineKeyboardButton("➕ Adicionar Grupo", callback_data="grp|add"),
+           InlineKeyboardButton("↩ Voltar",           callback_data="adm|main"))
+    return kb, "\n".join(lines)
+
+def kb_stats():
+    users = _load(F_USERS,[]); groups = _groups()
+    urls  = _urls(); auth = _auth(); act = urls["active"]; cfg = _cfg()
+    ativo = urls["list"][act]["label"] if act is not None and urls["list"] else "Nenhuma"
+    txt = (
+        f"📊 <b>Estatísticas — CineBot Ultra Pro</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 Usuários registrados : <b>{len(users)}</b>\n"
+        f"👥 Grupos configurados  : <b>{len(groups)}</b>\n"
+        f"🌐 URLs cadastradas     : <b>{len(urls['list'])}</b>\n"
+        f"✅ URL ativa            : <b>{ativo}</b>\n"
+        f"🔄 Sessões ativas       : <b>{len(_sessions)}</b>\n"
+        f"🎵 Módulo Música        : <b>{'ATIVO' if cfg['musica_ativa'] else 'INATIVO'}</b>\n"
+        f"🎚 Autorizados música   : <b>{len(auth)}</b>"
+    )
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("↩ Voltar", callback_data="adm|main"))
+    return kb, txt
+
+def kb_user_main(is_owner=False, uid=0):
+    cfg = _cfg(); kb = InlineKeyboardMarkup(row_width=1)
+    kb.add(InlineKeyboardButton("🎬 Buscar Filme", callback_data="usr|buscar"))
+    if cfg.get("musica_ativa") and is_auth_musica(uid):
+        kb.add(InlineKeyboardButton("🎵 Baixar Música (Deezer / Spotify)", callback_data="usr|musica"))
+    if is_owner:
+        kb.add(InlineKeyboardButton("🎛 Painel Admin", callback_data="adm|main"))
+    txt = (
+        "🎬 <b>CineBot Ultra Pro</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Filmes via streaming + Música Deezer/Spotify\n\n"
+        "👇 Selecione uma opção:"
+    )
+    return kb, txt
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                    HANDLER /start  /menu                        ║
+# ╚══════════════════════════════════════════════════════════════════╝
+@bot.message_handler(commands=['start','menu'])
+def h_start(message):
+    if not is_allowed(message): return
+    u = message.from_user
+    salvar_usuario(u.id, u.username or '', u.full_name or '')
+    lu(u.full_name, "/start")
+    kb, txt = kb_user_main(is_owner=(u.id == OWNER_ID), uid=u.id)
+    tid = _thread(message)
+    try: bot.delete_message(message.chat.id, message.message_id)
+    except: pass
+    send_msg(message.chat.id, txt, thread_id=tid, parse_mode='HTML', reply_markup=kb)
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║           HANDLER DE TEXTO CENTRAL                              ║
+# ║   • busca direta @Bot Termo                                     ║
+# ║   • estados pendentes (busca filme, URL musical, admin)         ║
+# ╚══════════════════════════════════════════════════════════════════╝
+_BOT_PREFIX_RE = re.compile(r'^@(\w+)\s+(.+)$', re.IGNORECASE | re.DOTALL)
+
+@bot.message_handler(content_types=['text'])
+def h_text(message):
+    uid   = message.from_user.id
+    state = _pending.get(uid, {})
+    text  = (message.text or "").strip()
+
+    # ── Busca direta por menção @Bot Termo ────────────────────────
+    m = _BOT_PREFIX_RE.match(text)
+    if m and not state:
+        try:
+            me = bot.get_me()
+            if m.group(1).lower() == me.username.lower():
+                if not is_allowed(message): return
+                termo   = m.group(2).strip()
+                creds   = get_active_creds()
+                tid     = _thread(message); chat_id = message.chat.id
+                u       = message.from_user
+                salvar_usuario(u.id, u.username or '', u.full_name or '')
+                lu(u.full_name, f"Busca direta: {termo}")
+                try: bot.delete_message(chat_id, message.message_id)
+                except: pass
+                if not creds:
+                    send_msg(chat_id, "❌ Nenhuma URL configurada.", thread_id=tid, parse_mode='HTML')
+                    return
+                sm   = send_msg(chat_id, "🔍 Iniciando busca...", thread_id=tid)
+                anim = threading.Thread(target=loading_animation,
+                                        args=(chat_id, sm.message_id, tid), daemon=True)
+                anim.start()
+                results = buscar_por_nome(creds, termo)
+                anim.join()
+                if not results:
+                    kb2, txt2 = kb_user_main(is_owner=(uid == OWNER_ID), uid=uid)
+                    send_msg(chat_id, f"❌ <b>Nenhum resultado para:</b> <i>{termo}</i>",
+                             thread_id=tid, parse_mode='HTML', reply_markup=kb2)
+                    return
+                _finalizar_busca_filme(chat_id, tid, uid, results, creds, u)
+                return
+        except Exception as e: logging.error(f"busca_direta: {e}")
+
+    if not state: return
+    action = state.get('action')
+
+    # ── Aguardando termo de busca de filme ────────────────────────
+    if action == 'search_term':
+        del _pending[uid]
+        termo   = text
+        creds   = state.get('creds') or get_active_creds()
+        tid     = state.get('thread_id') or _thread(message)
+        chat_id = message.chat.id
+        lu(message.from_user.full_name, f"Busca: {termo}")
+        try: bot.delete_message(chat_id, message.message_id)
+        except: pass
+        if not creds:
+            send_msg(chat_id, "❌ Nenhuma URL configurada.", thread_id=tid)
+            return
+        sm   = send_msg(chat_id, "🔍 Iniciando busca...", thread_id=tid)
+        anim = threading.Thread(target=loading_animation,
+                                args=(chat_id, sm.message_id, tid), daemon=True)
+        anim.start()
+        results = buscar_por_nome(creds, termo)
+        anim.join()
+        if not results:
+            kb2, txt2 = kb_user_main(is_owner=(uid == OWNER_ID), uid=uid)
+            send_msg(chat_id, f"❌ <b>Nenhum resultado para:</b> <i>{termo}</i>",
+                     thread_id=tid, parse_mode='HTML', reply_markup=kb2)
+            return
+        _finalizar_busca_filme(chat_id, tid, uid, results, creds, message.from_user)
+        return
+
+    # ── Aguardando URL musical (Deezer ou Spotify) ────────────────
+    if action == 'search_musica':
+        del _pending[uid]
+        url_input = text
+        tid       = state.get('thread_id') or _thread(message)
+        chat_id   = message.chat.id
+        try: bot.delete_message(chat_id, message.message_id)
+        except: pass
+
+        if not _cfg().get("musica_ativa"):
+            send_msg(chat_id, "❌ Módulo de música desativado.", thread_id=tid, parse_mode='HTML')
+            return
+        if not is_auth_musica(uid):
+            send_msg(chat_id, "🚫 Você não está autorizado para downloads.",
+                     thread_id=tid, parse_mode='HTML')
+            return
+
+        tipo, item_id = classificar_url_musical(url_input)
+
+        if tipo == 'playlist':
+            kb_cancel = InlineKeyboardMarkup()
+            kb_cancel.add(InlineKeyboardButton("↩ Menu", callback_data="usr|cancel"))
+            send_msg(chat_id,
+                "🚫 <b>Playlists não são aceitas.</b>\n\n"
+                "Envie apenas URL de:\n"
+                "• 🎵 Faixa individual\n"
+                "• 💿 Álbum completo\n\n"
+                "<i>Deezer ou Spotify</i>",
+                thread_id=tid, parse_mode='HTML', reply_markup=kb_cancel)
+            return
+
+        if tipo is None:
+            kb_cancel = InlineKeyboardMarkup()
+            kb_cancel.add(InlineKeyboardButton("↩ Menu", callback_data="usr|cancel"))
+            send_msg(chat_id,
+                "❌ <b>URL não reconhecida.</b>\n\n"
+                "Envie um link válido de:\n"
+                "• <code>https://www.deezer.com/track/XXXXXX</code>\n"
+                "• <code>https://www.deezer.com/album/XXXXXX</code>\n"
+                "• <code>https://open.spotify.com/track/XXXXXX</code>\n"
+                "• <code>https://open.spotify.com/album/XXXXXX</code>",
+                thread_id=tid, parse_mode='HTML', reply_markup=kb_cancel)
+            return
+
+        is_album   = tipo in ('dz_album', 'sp_album')
+        qual_label = QUAL_LABEL.get(get_qual(uid), "?")
+
+        # Busca metadados para exibir card antes do download
+        prog = send_msg(chat_id, "🔍 Buscando informações…", thread_id=tid, parse_mode='HTML')
+
+        if tipo == 'dz_album':
+            meta = metadados_album_deezer(item_id)
+        elif tipo == 'dz_track':
+            meta = metadados_track_deezer(item_id)
+        elif tipo == 'sp_album':
+            # Para Spotify, deemix resolve internamente; tentamos buscar no Deezer via ISRC
+            # Mostramos card genérico e passamos a URL original ao deemix
+            meta = None
+        else:   # sp_track
+            meta = None
+
+        try: bot.delete_message(chat_id, prog.message_id)
+        except: pass
+
+        lu(message.from_user.full_name,
+           f"Música {'álbum' if is_album else 'faixa'} — {url_input[:60]}")
+
+        if meta and tipo == 'dz_album':
+            cover, caption, kb_card = montar_card_album(meta, qual_label)
+            # Guarda url original para callback de download
+            _pending[uid] = {
+                '_dl_url':    url_input,
+                '_dl_album':  True,
+                '_dl_nome':   meta.get("title", "Álbum"),
+                '_dl_tid':    tid,
+                '_dl_chat':   chat_id,
+            }
+            send_photo(chat_id, cover, caption, kb_card, thread_id=tid)
+            return
+
+        if meta and tipo == 'dz_track':
+            cover, caption, kb_card = montar_card_track(meta, qual_label)
+            _pending[uid] = {
+                '_dl_url':   url_input,
+                '_dl_album': False,
+                '_dl_nome':  meta.get("title", "Faixa"),
+                '_dl_tid':   tid,
+                '_dl_chat':  chat_id,
+            }
+            send_photo(chat_id, cover, caption, kb_card, thread_id=tid)
+            return
+
+        # Spotify ou metadados indisponíveis → download direto sem card
+        nome_exib = "Spotify — " + ("álbum" if is_album else "faixa")
+        prog2     = send_msg(chat_id, "⏳ Preparando download…", thread_id=tid, parse_mode='HTML')
+        threading.Thread(
+            target=_executar_download_e_enviar,
+            args=(chat_id, tid, uid, url_input, is_album, prog2.message_id, nome_exib),
+            daemon=True
+        ).start()
+        return
+
+    # ── Aguardando ARL Deezer (somente dono) ─────────────────────
+    if action == 'await_arl' and uid == OWNER_ID:
+        del _pending[uid]
+        arl_value = text.strip()
+        try: bot.delete_message(message.chat.id, message.message_id)
+        except: pass
+        if len(arl_value) < 100:
+            send_msg(uid, "❌ ARL parece inválida (muito curta). Tente novamente.",
+                     parse_mode='HTML')
+            return
+        _cfg_set("deezer_arl", arl_value)
+        lok("ARL Deezer atualizada")
+        send_msg(uid,
+            f"✅ <b>ARL Deezer configurada!</b>\n🔑 <code>{arl_value[:12]}…</code>",
+            parse_mode='HTML')
+        kb2, txt2 = kb_musica_menu()
+        send_msg(uid, txt2, parse_mode='HTML', reply_markup=kb2)
+        return
+
+    # ── Aguardando UID para autorizar música (somente dono) ───────
+    if action == 'await_auth_uid' and uid == OWNER_ID:
+        del _pending[uid]
+        try: bot.delete_message(message.chat.id, message.message_id)
+        except: pass
+        try: target_uid = int(text.strip())
+        except ValueError:
+            send_msg(uid, "❌ ID inválido. Envie apenas o número.", parse_mode='HTML')
+            return
+        auth_add(target_uid)
+        send_msg(uid, f"✅ Usuário <code>{target_uid}</code> autorizado!", parse_mode='HTML')
+        kb2, txt2 = kb_musica_menu()
+        send_msg(uid, txt2, parse_mode='HTML', reply_markup=kb2)
+        return
+
+    # ── Aguardando label da URL de streaming ──────────────────────
+    if action == 'await_label' and uid == OWNER_ID:
+        label = text[:40]
+        _pending[uid] = {'action': 'await_url', 'label': label,
+                         'menu_chat': state['menu_chat'], 'menu_msg': state['menu_msg']}
+        try: bot.delete_message(message.chat.id, message.message_id)
+        except: pass
+        send_msg(uid,
+            "📡 <b>Agora envie a URL do portal de streaming:</b>\n\n"
+            "<code>http://host:80/get.php?username=U&password=P</code>\n"
+            "<code>http://host:80/player_api.php?username=U&password=P</code>\n"
+            "<code>http://host:80/U/P/arquivo.mkv</code>",
+            parse_mode='HTML')
+        return
+
+    # ── Aguardando a URL de streaming em si ──────────────────────
+    if action == 'await_url' and uid == OWNER_ID:
+        url = text; del _pending[uid]
+        try: bot.delete_message(message.chat.id, message.message_id)
+        except: pass
+        ok, result = url_add(url, state.get('label', f"URL {len(_urls()['list'])+1}"))
+        info_txt = (
+            f"✅ <b>URL adicionada!</b>\n\n"
+            f"🖥 <code>{result['host']}:{result['port']}</code>\n"
+            f"👤 <code>{result['username']}</code>"
+        ) if ok else result
+        if ok: lok(f"URL adicionada: {result['host']}")
+        kb2, txt2 = kb_urls_menu()
+        try: bot.edit_message_text(txt2, chat_id=state['menu_chat'],
+                                   message_id=state['menu_msg'],
+                                   parse_mode='HTML', reply_markup=kb2)
+        except: send_msg(uid, txt2, parse_mode='HTML', reply_markup=kb2)
+        send_msg(uid, info_txt, parse_mode='HTML')
+        return
+
+    # ── Aguardando CHAT_ID e THREAD_ID do grupo ───────────────────
+    if action == 'await_group_id' and uid == OWNER_ID:
+        del _pending[uid]
+        try: bot.delete_message(message.chat.id, message.message_id)
+        except: pass
+        parts = re.split(r'[\s,]+', text)
+        if len(parts) < 2:
+            send_msg(uid,
+                "❌ Formato: <code>CHAT_ID THREAD_ID Nome do Grupo</code>\n"
+                "Ex: <code>-1001234567890 5 Filmes HD</code>", parse_mode='HTML')
+            return
+        try:
+            chat_id   = int(parts[0]); thread_id = int(parts[1])
+            title     = " ".join(parts[2:]) if len(parts) > 2 else f"Grupo {parts[0]}"
+            group_set(chat_id, thread_id, title)
+            lok(f"Grupo adicionado: {chat_id} tópico {thread_id}")
+            kb2, txt2 = kb_grupos_menu()
+            try: bot.edit_message_text(txt2, chat_id=state['menu_chat'],
+                                       message_id=state['menu_msg'],
+                                       parse_mode='HTML', reply_markup=kb2)
+            except: send_msg(uid, txt2, parse_mode='HTML', reply_markup=kb2)
+            send_msg(uid,
+                f"✅ Grupo <code>{chat_id}</code> adicionado!\n"
+                f"📌 Tópico: <code>{thread_id}</code>  |  📛 <b>{title}</b>",
+                parse_mode='HTML')
+        except ValueError:
+            send_msg(uid, "❌ IDs inválidos. Use apenas números inteiros.", parse_mode='HTML')
+
+# ── Helper: finaliza busca de filme, salva sessão e envia card ────
+def _finalizar_busca_filme(chat_id, tid, uid, results, creds, user_obj):
+    first      = results[0]; vod_id = first.get("stream_id")
+    first_info = {}
+    try:
+        resp = buscar_info_filme(creds, vod_id)
+        first_info = resp.get("info", {}) if resp else {}
+    except: pass
+    sid = _new_sid(chat_id, uid)
+    infos = [None] * len(results); infos[0] = first_info
+    _sessions[sid] = {'user_id': uid, 'results': results, 'infos': infos,
+                      'index': 0, 'creds': creds,
+                      'chat_id': chat_id, 'thread_id': tid, 'user': user_obj}
+    searcher = mention(user_obj)
+    img, caption, kb = montar_card_filme(first, first_info, 0, len(results),
+                                         sid, creds, searcher_mention=searcher)
+    lok(f"{len(results)} resultado(s)")
+    send_photo(chat_id, img, caption, kb, thread_id=tid)
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                  CALLBACK HANDLER CENTRAL                       ║
+# ╚══════════════════════════════════════════════════════════════════╝
+@bot.callback_query_handler(func=lambda c: True)
+def h_callback(call):
+    uid  = call.from_user.id
+    data = call.data
+    now  = time.time()
+
+    if now - _cooldown.get(uid, 0) < 0.7:
+        bot.answer_callback_query(call.id, "⏳ Aguarde..."); return
+    _cooldown[uid] = now
+
+    try:
+        parts  = data.split('|')
+        action = parts[0]
+
+        # ════════════════════════════════════════════════════
+        # NAVEGAÇÃO DO CARD DE FILME  n|{sid}|{idx}
+        # ════════════════════════════════════════════════════
+        if action == 'n' and len(parts) == 3:
+            sid = int(parts[1]); idx = int(parts[2])
+            owner = _owner(sid)
+            if owner is None:
+                bot.answer_callback_query(call.id, "⚠️ Sessão expirada.", show_alert=True); return
+            if owner != uid:
+                bot.answer_callback_query(call.id, "🚫 Esta navegação não é sua."); return
+            sess = _sessions[sid]
+            results = sess['results']; infos = sess['infos']
+            creds   = sess['creds'];   user_obj = sess.get('user', call.from_user)
+            if not (0 <= idx < len(results)):
+                bot.answer_callback_query(call.id, "Índice inválido."); return
+            sess['index'] = idx
+            if infos[idx] is None:
+                bot.answer_callback_query(call.id, "⏳ Carregando detalhes...")
+                vod_id = results[idx].get("stream_id")
+                try:
+                    resp = buscar_info_filme(creds, vod_id)
+                    infos[idx] = resp.get("info", {}) if resp else {}
+                except: infos[idx] = {}
+            else:
+                bot.answer_callback_query(call.id)
+            img, caption, kb = montar_card_filme(
+                results[idx], infos[idx], idx, len(results),
+                sid, creds, searcher_mention=mention(user_obj))
+            try:
+                bot.edit_message_media(
+                    media=telebot.types.InputMediaPhoto(media=img, caption=caption, parse_mode='HTML'),
+                    chat_id=call.message.chat.id, message_id=call.message.message_id,
+                    reply_markup=kb)
+            except:
+                try:
+                    bot.edit_message_caption(caption=caption, chat_id=call.message.chat.id,
+                                             message_id=call.message.message_id,
+                                             parse_mode='HTML', reply_markup=kb)
+                except Exception as e2: le(f"edit_caption: {e2}")
+            return
+
+        # ════════════════════════════════════════════════════
+        # NOVA BUSCA  nb|{sid}
+        # ════════════════════════════════════════════════════
+        if action == 'nb' and len(parts) == 2:
+            sid = int(parts[1])
+            if _owner(sid) not in (None, uid):
+                bot.answer_callback_query(call.id, "🚫 Não é sua sessão."); return
+            if sid in _sessions: del _sessions[sid]
+            bot.answer_callback_query(call.id)
+            kb2, txt2 = kb_user_main(is_owner=(uid == OWNER_ID), uid=uid)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except: pass
+            send_msg(call.message.chat.id, txt2,
+                     thread_id=getattr(call.message, 'message_thread_id', None),
+                     parse_mode='HTML', reply_markup=kb2)
+            return
+
+        # ════════════════════════════════════════════════════
+        # USUÁRIO
+        # ════════════════════════════════════════════════════
+        if action == 'usr':
+            sub = parts[1]
+
+            # ── Buscar filme ──────────────────────────────
+            if sub == 'buscar':
+                bot.answer_callback_query(call.id)
+                creds = get_active_creds()
+                if not creds:
+                    bot.answer_callback_query(call.id, "❌ Nenhuma URL configurada.", show_alert=True)
+                    return
+                _pending[uid] = {
+                    'action':    'search_term',
+                    'chat_id':   call.message.chat.id,
+                    'thread_id': getattr(call.message, 'message_thread_id', None),
+                    'creds':     creds,
+                }
+                try: bot.delete_message(call.message.chat.id, call.message.message_id)
+                except: pass
+                kb_cancel = InlineKeyboardMarkup()
+                kb_cancel.add(InlineKeyboardButton("❌ Cancelar", callback_data="usr|cancel"))
+                send_msg(call.message.chat.id,
+                    "🔍 <b>Digite o nome do filme:</b>\n\n"
+                    "💡 Ou mencione direto no tópico:\n"
+                    "<code>@NomeDoBot Nome do Filme</code>",
+                    thread_id=getattr(call.message, 'message_thread_id', None),
+                    parse_mode='HTML', reply_markup=kb_cancel)
+                return
+
+            # ── Baixar música ─────────────────────────────
+            if sub == 'musica':
+                bot.answer_callback_query(call.id)
+                if not _cfg().get("musica_ativa"):
+                    bot.answer_callback_query(call.id, "❌ Módulo de música desativado.", show_alert=True)
+                    return
+                if not is_auth_musica(uid):
+                    bot.answer_callback_query(call.id, "🚫 Não autorizado.", show_alert=True)
+                    return
+                _pending[uid] = {
+                    'action':    'search_musica',
+                    'chat_id':   call.message.chat.id,
+                    'thread_id': getattr(call.message, 'message_thread_id', None),
+                }
+                try: bot.delete_message(call.message.chat.id, call.message.message_id)
+                except: pass
+                kb_cancel = InlineKeyboardMarkup()
+                kb_cancel.add(InlineKeyboardButton("❌ Cancelar", callback_data="usr|cancel"))
+                qual = QUAL_LABEL.get(get_qual(uid), "?")
+                send_msg(call.message.chat.id,
+                    f"🎵 <b>Envie o link do Deezer ou Spotify</b>\n\n"
+                    f"✅ <b>Aceitos:</b>\n"
+                    f"  • <code>deezer.com/album/…</code>\n"
+                    f"  • <code>deezer.com/track/…</code>\n"
+                    f"  • <code>open.spotify.com/album/…</code>\n"
+                    f"  • <code>open.spotify.com/track/…</code>\n\n"
+                    f"🚫 <b>Não aceito:</b> links de playlist\n\n"
+                    f"🎧 Sua qualidade: <b>{qual}</b>",
+                    thread_id=getattr(call.message, 'message_thread_id', None),
+                    parse_mode='HTML', reply_markup=kb_cancel)
+                return
+
+            # ── Download álbum via card (callback do botão no card) ──
+            if sub == 'dl_alb':
+                # Recupera dados armazenados em _pending pelo card
+                bot.answer_callback_query(call.id)
+                pend = _pending.pop(uid, {})
+                dl_url  = pend.get('_dl_url') or (f"https://www.deezer.com/album/{parts[2]}" if len(parts) > 2 else None)
+                dl_nome = pend.get('_dl_nome', 'Álbum')
+                dl_tid  = pend.get('_dl_tid') or getattr(call.message, 'message_thread_id', None)
+                dl_chat = pend.get('_dl_chat') or call.message.chat.id
+                if not dl_url and len(parts) > 2:
+                    dl_url = f"https://www.deezer.com/album/{parts[2]}"
+                if not dl_url:
+                    send_msg(dl_chat, "❌ URL perdida. Envie o link novamente.",
+                             thread_id=dl_tid, parse_mode='HTML'); return
+                if not is_auth_musica(uid) or not _cfg().get("musica_ativa"):
+                    send_msg(dl_chat, "🚫 Sem permissão.", thread_id=dl_tid, parse_mode='HTML'); return
+                try: bot.delete_message(call.message.chat.id, call.message.message_id)
+                except: pass
+                prog = send_msg(dl_chat, "⏳ Iniciando download do álbum…",
+                                thread_id=dl_tid, parse_mode='HTML')
+                threading.Thread(
+                    target=_executar_download_e_enviar,
+                    args=(dl_chat, dl_tid, uid, dl_url, True, prog.message_id, dl_nome),
+                    daemon=True
+                ).start()
+                return
+
+            # ── Download faixa via card ───────────────────
+            if sub == 'dl_trk':
+                bot.answer_callback_query(call.id)
+                pend    = _pending.pop(uid, {})
+                dl_url  = pend.get('_dl_url') or (f"https://www.deezer.com/track/{parts[2]}" if len(parts) > 2 else None)
+                dl_nome = pend.get('_dl_nome', 'Faixa')
+                dl_tid  = pend.get('_dl_tid') or getattr(call.message, 'message_thread_id', None)
+                dl_chat = pend.get('_dl_chat') or call.message.chat.id
+                if not dl_url and len(parts) > 2:
+                    dl_url = f"https://www.deezer.com/track/{parts[2]}"
+                if not dl_url:
+                    send_msg(dl_chat, "❌ URL perdida. Envie o link novamente.",
+                             thread_id=dl_tid, parse_mode='HTML'); return
+                if not is_auth_musica(uid) or not _cfg().get("musica_ativa"):
+                    send_msg(dl_chat, "🚫 Sem permissão.", thread_id=dl_tid, parse_mode='HTML'); return
+                try: bot.delete_message(call.message.chat.id, call.message.message_id)
+                except: pass
+                prog = send_msg(dl_chat, "⏳ Iniciando download da faixa…",
+                                thread_id=dl_tid, parse_mode='HTML')
+                threading.Thread(
+                    target=_executar_download_e_enviar,
+                    args=(dl_chat, dl_tid, uid, dl_url, False, prog.message_id, dl_nome),
+                    daemon=True
+                ).start()
+                return
+
+            # ── Cancelar ─────────────────────────────────
+            if sub == 'cancel':
+                bot.answer_callback_query(call.id)
+                _pending.pop(uid, None)
+                try: bot.delete_message(call.message.chat.id, call.message.message_id)
+                except: pass
+                kb2, txt2 = kb_user_main(is_owner=(uid == OWNER_ID), uid=uid)
+                send_msg(call.message.chat.id, txt2,
+                         thread_id=getattr(call.message, 'message_thread_id', None),
+                         parse_mode='HTML', reply_markup=kb2)
+                return
+
+        # ════════════════════════════════════════════════════
+        # ADMIN — somente dono
+        # ════════════════════════════════════════════════════
+        if uid != OWNER_ID:
+            bot.answer_callback_query(call.id, "🚫 Sem permissão."); return
+
+        if action == 'adm':
+            sub = parts[1]; bot.answer_callback_query(call.id)
+            if   sub == 'main':       edit_or_send(call, *kb_admin_main())
+            elif sub == 'urls':       edit_or_send(call, *kb_urls_menu())
+            elif sub == 'grupos':     edit_or_send(call, *kb_grupos_menu())
+            elif sub == 'musica':     edit_or_send(call, *kb_musica_menu())
+            elif sub == 'stats':      edit_or_send(call, *kb_stats())
+            elif sub == 'tog_musica':
+                novo = not _cfg()["musica_ativa"]
+                _cfg_set("musica_ativa", novo)
+                lok(f"Módulo música: {'ATIVO' if novo else 'INATIVO'}")
+                edit_or_send(call, *kb_admin_main())
+            elif sub == 'close':
+                try: bot.delete_message(call.message.chat.id, call.message.message_id)
+                except: pass
+            return
+
+        # ── Música / autorizados ─────────────────────────────
+        if action == 'mus':
+            sub = parts[1]; bot.answer_callback_query(call.id)
+
+            if sub == 'add':
+                _pending[uid] = {'action': 'await_auth_uid'}
+                send_msg(uid, "👤 <b>Envie o ID numérico do usuário a autorizar:</b>",
+                         parse_mode='HTML'); return
+
+            if sub == 'del' and len(parts) == 3:
+                auth_remove(int(parts[2]))
+                lok(f"Usuário {parts[2]} removido da música")
+                edit_or_send(call, *kb_musica_menu()); return
+
+            if sub == 'setq' and len(parts) == 3:
+                target = parts[2]
+                kb_q   = InlineKeyboardMarkup(row_width=3)
+                kb_q.row(
+                    InlineKeyboardButton("128kbps", callback_data=f"mus|qual|{target}|MP3_128"),
+                    InlineKeyboardButton("320kbps", callback_data=f"mus|qual|{target}|MP3_320"),
+                    InlineKeyboardButton("FLAC",    callback_data=f"mus|qual|{target}|FLAC"),
+                )
+                kb_q.add(InlineKeyboardButton("↩ Voltar", callback_data="adm|musica"))
+                edit_or_send(call, kb_q, f"🎚 Qualidade para <code>{target}</code>:"); return
+
+            if sub == 'qual' and len(parts) == 4:
+                auth_set_qual(int(parts[2]), parts[3])
+                lok(f"Qualidade {parts[2]} → {parts[3]}")
+                edit_or_send(call, *kb_musica_menu()); return
+
+            if sub == 'qual_pad' and len(parts) == 3:
+                _cfg_set("qualidade_padrao", parts[2])
+                lok(f"Qualidade padrão → {parts[2]}")
+                edit_or_send(call, *kb_musica_menu()); return
+
+            if sub == 'set_arl':
+                _pending[uid] = {'action': 'await_arl'}
+                send_msg(uid,
+                    "🔑 <b>Configurar ARL do Deezer</b>\n\n"
+                    "Envie a sua ARL (cookie de autenticação do Deezer).\n\n"
+                    "📌 <b>Como obter:</b>\n"
+                    "1. Acesse <a href='https://www.deezer.com'>deezer.com</a> e faça login\n"
+                    "2. Abra as ferramentas do navegador (F12)\n"
+                    "3. Vá em <b>Application → Cookies → deezer.com</b>\n"
+                    "4. Copie o valor do cookie <code>arl</code>\n\n"
+                    "⚠️ <b>Atenção:</b> a ARL é sensível — não compartilhe com ninguém!",
+                    parse_mode='HTML'); return
+
+        # ── URLs de streaming ─────────────────────────────────
+        if action == 'url':
+            sub = parts[1]
+            if sub == 'add':
+                bot.answer_callback_query(call.id)
+                _pending[uid] = {'action': 'await_label',
+                                 'menu_chat': call.message.chat.id,
+                                 'menu_msg':  call.message.message_id}
+                send_msg(uid, "📝 <b>Digite um nome para esta URL:</b>", parse_mode='HTML'); return
+            if sub == 'use' and len(parts) == 3:
+                ok, label = url_set_active(int(parts[2]))
+                bot.answer_callback_query(call.id, f"✅ Usando: {label}" if ok else "Erro.")
+                if ok: lok(f"URL ativa → {label}"); edit_or_send(call, *kb_urls_menu())
+                return
+            if sub == 'del' and len(parts) == 3:
+                ok, label = url_remove(int(parts[2]))
+                bot.answer_callback_query(call.id, f"🗑 Removida: {label}" if ok else "Erro.")
+                if ok: lw(f"URL removida: {label}"); edit_or_send(call, *kb_urls_menu())
+                return
+
+        # ── Grupos ───────────────────────────────────────────
+        if action == 'grp':
+            sub = parts[1]
+            if sub == 'add':
+                bot.answer_callback_query(call.id)
+                _pending[uid] = {'action': 'await_group_id',
+                                 'menu_chat': call.message.chat.id,
+                                 'menu_msg':  call.message.message_id}
+                send_msg(uid,
+                    "📌 <b>Adicionar Grupo</b>\n\n"
+                    "Formato: <code>CHAT_ID THREAD_ID Nome</code>\n"
+                    "Ex: <code>-1001234567890 5 Filmes HD</code>",
+                    parse_mode='HTML'); return
+            if sub == 'del' and len(parts) == 3:
+                group_remove(int(parts[2]))
+                bot.answer_callback_query(call.id, "✅ Grupo removido.")
+                lw(f"Grupo removido: {parts[2]}")
+                edit_or_send(call, *kb_grupos_menu()); return
+
+        bot.answer_callback_query(call.id)
+
+    except Exception as e:
+        logging.error(f"h_callback: {e}"); le(f"Callback: {e}")
+        try: bot.answer_callback_query(call.id, "❌ Erro interno.")
+        except: pass
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                      INICIALIZAÇÃO                              ║
+# ╚══════════════════════════════════════════════════════════════════╝
+if __name__ == "__main__":
+    print_banner()
+    li("Conectando ao Telegram…")
+    try:
+        me = bot.get_me()
+        lok(f"@{me.username}  (ID: {me.id})")
+    except Exception as e:
+        le(f"Falha: {e}"); sys.exit(1)
+
+    cfg  = _cfg(); data = _urls()
+    n    = len(data["list"])
+    act  = data["list"][data["active"]]["label"] if data["active"] is not None and n else "nenhuma"
+    auth = _auth()
+
+    li(f"URLs cadastradas  : {n}  |  Ativa: {act}")
+    li(f"Grupos ativos     : {len(_groups())}")
+    li(f"Módulo Música     : {'ATIVO ✅' if cfg['musica_ativa'] else 'INATIVO 🔴'}")
+    li(f"Qualidade padrão  : {QUAL_LABEL.get(cfg['qualidade_padrao'], '?')}")
+    li(f"Autorizados mús.  : {len(auth)}")
+    li(f"Busca direta      : @{me.username} <nome do filme>")
+    li(f"Dono              : ID {OWNER_ID}  (Edivaldo Silva)")
+    li(f"Dados             : {DATA_DIR}")
+    li(f"Música            : {MUSIC_DIR}")
+
+    # Verifica dependências opcionais
+    try:
+        import deemix; lok("deemix           : instalado ✅")
+    except ImportError:
+        lw("deemix           : NÃO instalado ⚠  (pip install deemix deezer-python)")
+    ffmpeg_ok = os.system("ffmpeg -version >>/dev/null 2>&1") == 0
+    lok("ffmpeg           : instalado ✅") if ffmpeg_ok else lw("ffmpeg           : não encontrado ⚠")
+
+    W = 66
+    print(f"\n  {Fore.CYAN}{'═' * W}")
+    print(f"  {Fore.GREEN}{Style.BRIGHT}{'🚀  CINEBOT ULTRA PRO  ·  ONLINE':^{W}}")
+    print(f"  {Fore.CYAN}{'═' * W}\n")
+
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=0, timeout=25)
+        except Exception as e:
+            le(f"Polling: {e} — reiniciando em 5s…"); time.sleep(5)
